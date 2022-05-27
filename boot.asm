@@ -197,7 +197,7 @@ thread_main#n:
 }
 
 main32:
-        mov     eax,0x08
+        mov     eax,0x10
         mov     ds,ax
         mov     es,ax
         mov     fs,ax
