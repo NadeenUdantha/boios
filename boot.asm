@@ -189,7 +189,7 @@ thread_main#n:
 .hlt:
         hlt
         cli
-        cursor  (n*5) mod (16*5),n/16
+        cursor  (n*5) mod (16*5),n/16+1
         call    screen.hex16
         sti
         inc     ax
@@ -216,8 +216,8 @@ main32:
 .init_idt:
         lidt    [idtx]
         call    screen.cls
-;        mov     esi,str_hello
-;        call    screen.puts
+        mov     esi,str_boios
+        call    screen.puts
 .init_timer:
         mov     al,00110100b
         outb    0x43,al
@@ -440,7 +440,7 @@ audio:
         pop     ax
         ret
 
-str_hello db 0x0a,0x0d,'Hello World!',0x0a,0x0d,0
+str_boios db 'boiOS',0x0a,0x0d,0
 
 sleep_ms:
         push    eax
