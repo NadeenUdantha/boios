@@ -1,12 +1,13 @@
 
-macro outb p,v
-{
-        mov     al,v
-        out     p,al
-}
+format coff
 
+extrn _boios_main
+extrn _puts
+
+section '.boot' code data
 org 0x7c00
 use16
+public main16
 main16:
         jmp     0:.z
 .z:
@@ -21,19 +22,21 @@ main16:
         mov     eax,cr0
         or      eax,1
         mov     cr0,eax
-        jmp     08h:main32
+        jmp     0x08:main32
+
+align 32
 use32
 gdt:
-gdt_null:
+.null:
    dq 0
-gdt_code:
+.code:
    dw 0xFFFF
    dw 0
    db 0
    db 10011010b
    db 11001111b
    db 0
-gdt_data:
+.data:
    dw 0xFFFF
    dw 0
    db 0
@@ -45,6 +48,7 @@ gdtx:
    dw gdt_end-gdt-1
    dd gdt
 
+align 32
 idt:
 rept 32 n:0
 {
@@ -68,33 +72,51 @@ idtx:
     dw idt_end-idt-1
     dd idt
 
+extrn _stdout_color
+extrn _isr_dump
+
+align 32
+isr_stack dd 0
+rb 1024
+isr_stack_mem:
 isrz:
 rept 32 n:0
 {
+;TODO: handle error codes
 isr#n:
+        mov     [isr_stack],esp
+        mov     esp,isr_stack_mem
         push    word n
         jmp     isr_handler
 }
 isr_handler:
-        mov     esi,str_err
-        call    screen.puts
+        mov     byte[_stdout_color],0x0c
+        push    dword isr_str_err
+        mov     esi,_puts
+        call    esi
+        add     esp,4
         xor     eax,eax
         pop     ax
-        cmp     eax,32
-        jg      .z
         cmp     eax,20
         jl      .zz
-        mov     eax,19
+        push    dword isr_str_err
+        mov     esi,_puts
+        call    esi
+        jmp     .z
 .zz:
         mov     esi,dword[eax*4+isr_errs]
-        call    screen.puts
-        mov     esi,str_err
-        call    screen.puts
+        push    esi
+        mov     esi,_puts
+        call    esi
+        push    dword [isr_stack]
+        mov     esi,_isr_dump
+        call    esi
 .z:
         hlt
         jmp     .z
+.errz db 0,0,0
 
-str_err db 0x0a,0x0d,'ERRORRRRR! WTF???????????',0x0a,0x0d,0
+isr_str_err db 0x0a,0x0d,'ERRORRRRR! WTF???????????',0x0a,0x0d,0
 
 isr_err0  db 'Division By Zero',0
 isr_err1  db 'Debug',0
@@ -117,12 +139,14 @@ isr_err17 db 'Alignment Check',0
 isr_err18 db 'Machine Check',0
 isr_err19 db 'Reserved',0
 
+align 32
 isr_errs:
 rept 20 n:0
 {
 dd isr_err#n
 }
 
+align 32
 irqz:
 rept 16 n:0
 {
@@ -134,7 +158,12 @@ irq#n:
 irq_handler:
         pop     word[.n]
         pushad
+        push    ds
+        push    es
+        push    fs
+        push    gs
         mov     [irq_stack],esp
+        mov     esp,irq_stack_mem
         xor     eax,eax
         mov     ax,[.n]
         mov     ebx,[irqhs+eax*4]
@@ -144,18 +173,51 @@ irq_handler:
 .zz:
         cmp     [.n],8
         jle     .z
-        outb    0xA0,0x20
+        mov     al,0x20
+        out     0x0A,al
 .z:
-        outb    0x20,0x20
+        mov     al,0x20
+        out     0x20,al
+        mov     esp,[irq_stack]
         mov     [irq_stack],0
+        pop     gs
+        pop     fs
+        pop     es
+        pop     ds
         popad
         iret
 .n dw 0
+public _irq_stack
+_irq_stack:
 irq_stack dd 0
+rb 1024
+irq_stack_mem:
+rb 1024
 irqhs:
 rept 16 n:0
 {
 irqh#n dd 0
+}
+
+rept 4 n:1
+{
+public _test#n
+_test#n:
+.z:
+        hlt
+        cli
+        mov     esp,.stack
+        mov     eax,0xB8000
+;        mov     [_stdout_x],0
+;        mov     [_stdout_y],10+n*3
+;        mov     esi,_printf
+;        mov     esp,
+        sti
+        jmp     .z
+rb 100
+.stack:
+rb 100
+.msg db 'thread','0'+n,0
 }
 
 nmi_enable:
@@ -179,30 +241,20 @@ macro cursor x,y
         mov     byte[screen.cy],y
 }
 
-num_threads equ 256
-THREAD_MASK equ num_threads-1
-
-rept num_threads n:0
-{
-thread_main#n:
-        mov     ax,n*0x0100
-.hlt:
-        hlt
-        cli
-        cursor  (n*5) mod (16*5),n/16+1
-        call    screen.hex16
-        sti
-        inc     ax
-        jmp     .hlt
-}
-
+align 32
 main32:
         mov     eax,0x10
         mov     ds,ax
         mov     es,ax
         mov     fs,ax
         mov     gs,ax
+        mov     ss,ax
 .remap_pic:
+macro outb p,v
+{
+        mov     al,v
+        out     p,al
+}
         outb    0x20,0x11
         outb    0xA0,0x11
         outb    0x21,0x20
@@ -213,21 +265,17 @@ main32:
         outb    0xA1,0x01
         outb    0x21,0x0
         outb    0xA1,0x0
+purge outb
 .init_idt:
         lidt    [idtx]
-        call    screen.cls
-        mov     esi,str_boios
-        call    screen.puts
 .init_timer:
         mov     al,00110100b
-        outb    0x43,al
-        mov     ax,1193;1193;1193180
+        out     0x43,al
+        mov     ax,1193;1193180
         out     0x40,al
         mov     al,ah
         out     0x40,al
-.init_irqs:
-        mov     [irqh0],irq_timer
-        mov     [irqh1],irq_kbd
+.main:
         xor     eax,eax
         xor     ebx,ebx
         xor     ecx,ecx
@@ -235,165 +283,151 @@ main32:
         xor     ebp,ebp
         xor     esi,esi
         xor     edi,edi
+        mov     esp,0xD000
         call    nmi_enable
-        sti
-        jmp     thread_main0
+        jmp     0x08:_boios_main
+;        sti
+;        jmp     sh
+;        jmp     thread_main0
 ;        call    cpuid_test
 .hlt:
         hlt
         jmp     .hlt
 
-cpuid_test:
-        mov     eax,0
-        cpuid
-        mov     dword[.tmp16x],ebx
-        mov     dword[.tmp16x+4],edx
-        mov     dword[.tmp16x+8],ecx
-        mov     esi,.tmp16x
-        call    screen.puts
-        mov     eax,1
-        cpuid
-        mov     al,' '
-        call    screen.putch
-        mov     eax,ecx
-        call    screen.hex32
-        mov     al,' '
-        call    screen.putch
-        mov     eax,ecx
-        and     ax,1 shl 5
-        shl     al,4
-        add     al,'0'
-        call    screen.putch
-        ret
-.tmp16x rb 13
-
-macro dump32 n,var
-{
-        push    eax
-        push    esi
-        mov     esi,n
-        call    screen.puts
-        mov     eax,var
-        call    screen.hex32
-        pop     esi
-        pop     eax
-}
-struc thread n=0,main=0
-{
-        .regs tregs n
-        .n db n
-        .main dd main
-}
-struc tregs n
-{
-.edi dd 0
-.esi dd 0
-.ebp dd 0
-.esp dd 0xF000+(n+1)*0x0FF
-.ebx dd 0
-.edx dd 0
-.ecx dd 0
-.eax dd 0
-
-.eip dd 0
-.cs dd 0x08
-.eflags dd 0x0202
-.esp2 dd 0
-.ss dd 0
-}
-tregs.size=8+5
-
-dump_regs:
-virtual at eax
-.tregs tregs 0
-end virtual
-        dump32  .str_eax,[.tregs.eax]
-        dump32  .str_ebx,[.tregs.ebx]
-        dump32  .str_ecx,[.tregs.ecx]
-        dump32  .str_edx,[.tregs.edx]
-        dump32  .str_ebp,[.tregs.ebp]
-        dump32  .str_esi,[.tregs.esi]
-        dump32  .str_edi,[.tregs.edi]
-        dump32  .str_esp,[.tregs.esp]
-        dump32  .str_eip,[.tregs.eip]
-        dump32  .str_cs,[.tregs.cs]
-        dump32  .str_eflags,[.tregs.eflags]
-        dump32  .str_esp2,[.tregs.esp2]
-        dump32  .str_ss,[.tregs.ss]
+public _set_irq_handler
+_set_irq_handler:
+        mov     ebx,[esp+8]
+        mov     eax,[esp+4]
+        mov     dword[irqhs+4*eax],ebx
         ret
 
-.str_eax db 'eax=',0
-.str_ecx db ' ecx=',0
-.str_edx db ' edx=',0
-.str_ebx db ' ebx=',0
-.str_esp db ' esp=',0
-.str_ebp db ' ebp=',0
-.str_esi db ' esi=',0
-.str_edi db ' edi=',0
-.str_eip db ' eip=',0
-.str_cs db ' cs=',0
-.str_eflags db ' eflags=',0
-.str_esp2 db ' esp2=',0
-.str_ss db ' ss=',0
-
-irq_thread:
-        xor     eax,eax
-        mov     al,[threads.cur]
-        inc     al
-        and     al,THREAD_MASK
-        mov     [threads.cur],al
-        mov     ebx,[threads+(eax-1)*4]
-        mov     [.cur],ebx
-        mov     ebx,[threads+(eax)*4]
-        mov     [.nxt],ebx
-.load_regs:
-        mov     esi,[irq_stack]
-        mov     edi,[.cur]
-        mov     ecx,tregs.size
-.copy:
-        mov     eax,dword[ss:esi]
-        mov     dword[edi],eax
-        add     esi,4
-        add     edi,4
-        dec     ecx
-        jnz     .copy
-.edit_regs:
-        mov     eax,[.nxt]
-virtual at eax
-.thr thread
-end virtual
-        cmp     [.thr.regs.eip],0
-        jne     .z
-        mov     ebx,[.thr.main]
-        mov     [.thr.regs.eip],ebx
+public _shutdown
+_shutdown:
+        cli
+macro outw p,v
+{
+        mov     ax,v
+        mov     dx,p
+        out     dx,ax
+}
+        outw    0xB004, 0x2000
+        outw    0x0604, 0x2000
+        outw    0x4004, 0x3400
+purge outw
 .z:
-;        cursor  0,5
-;        call    dump_regs
-.save_regs:
-        mov     esi,[irq_stack]
-        mov     edi,[.nxt]
-        mov     ecx,tregs.size
-.copy2:
-        mov     eax,dword[edi]
-        mov     dword[ss:esi],eax
-        add     esi,4
-        add     edi,4
-        dec     ecx
-        jnz     .copy2
-        ret
-.cur dd 0
-.nxt dd 0
+        hlt
+        jmp     .z
 
-threads:
-rept num_threads n:0
-{
-        dd thread#n
-}
-.cur db 0
-rept num_threads n:0
-{
-        thread#n thread n,thread_main#n
-}
+public _reboot
+_reboot:
+        cli
+.r:
+        in      al,0x64
+        and     al,0x02
+        jnz     .r
+        mov     al,0xfe
+        out     0x64,al
+.z:
+        hlt
+        jmp     .z
+
+
+public _printf
+extrn _puthex32
+extrn _putdec32
+extrn _putchar
+_printf:
+        push    ebp
+        xor     ebp,ebp
+        push    ebx
+        mov     ebx,[esp+12]
+.n:
+        mov     al,[ebx]
+        inc     ebx
+        cmp     al,0
+        je      .r
+        cmp     al,'%'
+        jne     .nf
+        mov     al,[ebx]
+        inc     ebx
+        cmp     al,0
+        je      .r
+        cmp     al,'x'
+        je      .fx
+        cmp     al,'d'
+        je      .fd
+        cmp     al,'s'
+        je      .fs
+        cmp     al,'c'
+        je      .fc
+        cmp     al,'#'
+        je      .fh
+.nf:
+        push    eax
+        mov     eax,_putchar
+        call    eax
+        add     esp,4
+        jmp     .n
+.fx:
+        mov     eax,[esp+ebp*4+16]
+        inc     ebp
+        push    eax
+        mov     eax,_puthex32
+        call    eax
+        add     esp,4
+        jmp     .n
+.fd:
+        mov     eax,[esp+ebp*4+16]
+        inc     ebp
+        push    eax
+        mov     eax,_putdec32
+        call    eax
+        add     esp,4
+        jmp     .n
+.fs:
+        mov     eax,[esp+ebp*4+16]
+        push    esi
+        mov     esi,eax
+        inc     ebp
+.fsz:
+        xor     eax,eax
+        mov     al,byte[esi]
+        cmp     al,0
+        je      .fsn
+        push    eax
+        mov     eax,_putchar
+        call    eax
+        add     esp,4
+        inc     esi
+        jmp     .fsz
+.fsn:
+        pop     esi
+        jmp     .n
+.fc:
+        mov     eax,[esp+ebp*4+16]
+        inc     ebp
+        push    eax
+        mov     eax,_putchar
+        call    eax
+        add     esp,4
+        jmp     .n
+.fh:
+        inc     ebx
+        push    dword '0'
+        mov     eax,_putchar
+        call    eax
+        add     esp,4
+        push    dword 'x'
+        mov     eax,_putchar
+        call    eax
+        add     esp,4
+        jmp     .fx
+.r:
+        pop     ebx
+        pop     ebp
+        ret
+
+str_boios db 'boiOS',0
 
 audio:
 .beep:
@@ -401,7 +435,7 @@ audio:
         call    .set_freq
         call    .enable
         mov     eax,ebx
-        call    sleep_ms
+        ;call    sleep_ms
         call    .disable
         pop     ebx
         ret
@@ -440,42 +474,6 @@ audio:
         pop     ax
         ret
 
-str_boios db 'boiOS',0x0a,0x0d,0
 
-sleep_ms:
-        push    eax
-        add     eax,dword[timeMs]
-.z:
-        hlt
-        cmp     eax,dword[timeMs]
-        jg      .z
-        pop     eax
-        ret
 
-timeMs dd 0
-irq_timer:
-        inc     dword[timeMs]
-        call    irq_thread
-        ret
 
-irq_kbd:
-        xor     eax,eax
-        in      al,0x60
-        mov     ebx,eax
-        and     ebx,0x80
-        jnz     .z
-;        cmp     al,.code_end-.code_start
-;        jl      .z
-        mov     al,byte[eax+.code_start]
-        call    screen.putch
-.z:
-        ret
-
-.code_start:
-db 0,27,'1234567890-=',0
-db 0,'qwertyuiop[]',0
-db 0,'asdfghjkl;',"'`"
-db 0,'\zxcvbnm,./',0
-.code_end:
-
-include 'screen.asm'

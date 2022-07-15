@@ -1,0 +1,7 @@
+ata0-master: type=cdrom,path=R:\boios\image.iso,mode=flat,status=inserted
+boot: cdrom
+debug_symbols: file=R:\boios\main.debug.sym
+memory: guest=4,host=5
+vga: update_freq=30
+clock: sync=realtime
+magic_break: enabled=1

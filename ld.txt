@@ -1,0 +1,17 @@
+ENTRY(main16)
+SECTIONS
+{
+  .boot(0x7c00):
+  {
+    *(.boot)
+  }
+  .text(0x10000):
+  {
+    *(.text)
+    *(.bss)
+    *(.data)
+    *(.rdata)
+    *(.rodata*)
+    *(COMMON)
+  }
+}
